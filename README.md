@@ -1,5 +1,7 @@
 # ochiba_catch_claude
 
+▶ **遊ぶ: https://wagomuchan.github.io/ochiba_catch_claude/**
+
 ひらひら落ちてくる落ち葉をタップしてキャッチするブラウザゲーム。
 当たり判定は葉っぱの形そのままなので、もみじの切れ込みや虫食いの穴をタップするとすり抜ける。
 
