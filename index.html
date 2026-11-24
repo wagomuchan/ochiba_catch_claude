@@ -45,6 +45,10 @@ html,body{margin:0;height:100%;overflow:hidden;background:#20160f;color:var(--fg
     background:var(--panel);padding:3px;gap:2px}
 #modeBox button{border:none;background:none;color:var(--fg);font-size:13px;font-weight:bold;padding:7px 12px;border-radius:999px;cursor:pointer;font-family:inherit}
 #modeBox button.on{background:var(--accent);color:#3a1d05}
+#thingBox{position:fixed;top:calc(max(12px,env(safe-area-inset-top)) + 98px);left:16px;display:flex;border-radius:999px;
+    background:var(--panel);padding:3px;gap:2px}
+#thingBox button{border:none;background:none;color:var(--fg);font-size:13px;font-weight:bold;padding:7px 12px;border-radius:999px;cursor:pointer;font-family:inherit}
+#thingBox button.on{background:#f3efe6;color:#3a2a1a}
 #soundBtn{position:fixed;top:max(10px,env(safe-area-inset-top));right:68px;width:44px;height:44px;border-radius:50%;
     border:none;background:var(--panel);color:var(--fg);font-size:20px;cursor:pointer;}
 .pop.big{font-size:30px;color:#fff3b0;text-shadow:0 0 12px rgba(255,190,60,.9),0 2px 6px rgba(0,0,0,.6)}
@@ -58,6 +62,10 @@ html,body{margin:0;height:100%;overflow:hidden;background:#20160f;color:var(--fg
     <button id="modeIra">イライラ</button>
     <button id="modeSuka">スカッと</button>
 </div>
+<div id="thingBox">
+    <button id="thingLeaf">🍁 落ち葉</button>
+    <button id="thingHane">🪶 羽</button>
+</div>
 <button id="soundBtn" aria-label="音">🔊</button>
 <button id="gearBtn" aria-label="設定">⚙</button>
 <div id="panel">
@@ -67,7 +75,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#20160f;color:var(--fg
     <input id="wind" type="range" min="0" max="2" step="0.05" value="0.15">
     <label>空気のゆらぎ <span id="turbVal">1.0</span></label>
     <input id="turb" type="range" min="0" max="2.5" step="0.1" value="1">
-    <label>種類</label>
+    <label>落ち葉の種類</label>
     <select id="kind">
         <option value="mix">まぜる</option>
         <option value="momiji">もみじ</option>
@@ -89,15 +97,16 @@ const GRAVITY=9.8;
 const TEX=512;
 const MAX_GROUND=170;
 
-const settings={count:8, wind:0.15, turb:1.0, kind:"mix", slow:false, mode:"ira", sound:true};
+const settings={count:8, wind:0.15, turb:1.0, kind:"mix", slow:false, mode:"ira", sound:true, thing:"leaf"};
 try{
     const m=localStorage.getItem("ochiba_mode");
     if(m==="suka"||m==="ira"){ settings.mode=m; }
     if(localStorage.getItem("ochiba_sound")==="off"){ settings.sound=false; }
+    if(localStorage.getItem("ochiba_thing")==="hane"){ settings.thing="hane"; }
 }catch(e){
     //プライベートモードとか
 }
-const PHYS={cn90:1.5, cnLift:3.2, ct:0.12, cop:0.24, rotDamp:0.9, rotLin:0.4, rotR:0.8, asym:0.8};
+const PHYS={cn90:1.5, cnLift:3.2, ct:0.12, cop:0.24, rotDamp:0.9, rotLin:0.4, rotR:0.8, asym:0.8, haneOff:0.05};
 
 function randRange(a,b)
 {
@@ -287,10 +296,204 @@ function drawStem(g,stem,col)
     g.stroke();
 }
 
+// ===== 羽 =====
+
+const HANE_COLORS=[
+    {base:"#e6e1d8", tip:"#d4cec4", barb:"rgba(120,112,100,0.55)", shaft:"#f6f2ea", fluff:"rgba(245,242,236,0.85)"},
+    {base:"#e2ddd4", tip:"#a8a29a", barb:"rgba(110,104,96,0.55)", shaft:"#f0ece4", fluff:"rgba(240,238,232,0.8)"},
+    {base:"#a9aeb6", tip:"#50565f", barb:"rgba(50,55,65,0.55)", shaft:"#dcdee0", fluff:"rgba(215,217,220,0.8)"},
+    {base:"#9c7654", tip:"#5a3e28", barb:"rgba(50,34,20,0.55)", shaft:"#e2d2bc", fluff:"rgba(225,205,185,0.8)", band:"rgba(45,28,16,0.5)"},
+    {base:"#c9a878", tip:"#8a6a44", barb:"rgba(80,60,35,0.5)", shaft:"#efe2cc", fluff:"rgba(235,222,200,0.8)", band:"rgba(70,48,26,0.4)"},
+    {base:"#2e2e36", tip:"#1c1c22", barb:"rgba(120,140,170,0.45)", shaft:"#44444e", fluff:"rgba(90,90,100,0.8)"},
+];
+
+function makeHaneShape()
+{
+    const cx=256, top=36, bottom=490;
+    const L=bottom-top;
+    const curve=randRange(-28,28);
+    let wa=randRange(50,76), wb=randRange(26,50);
+    if(Math.random()<0.5){
+        const tmp=wa;
+        wa=wb;
+        wb=tmp;
+    }
+    const vs=randRange(0.17,0.25);//ここから羽
+    const slant=randRange(0.9,1.4);
+    const axisX=(t)=>cx+curve*(t*t-0.5*t);
+    const axisY=(t)=>bottom-t*L;
+    const width=(t,W)=>{
+        if(t<vs){ return 0; }
+        const u=(t-vs)/(1-vs);
+        const grow=0.35+0.65*smoothstep(0,0.22,u);
+        return W*grow*Math.sqrt(Math.max(0,1-Math.pow(u,3.5)));
+    };
+
+    const pts=[];
+    const n=90;
+    for(let i=0;i<=n;i++){
+        const t=vs+(1-vs)*i/n;
+        pts.push({x:axisX(t)-width(t,wa)+randRange(-1.2,1.2), y:axisY(t)});
+    }
+    for(let i=n;i>=0;i--){
+        const t=vs+(1-vs)*i/n;
+        pts.push({x:axisX(t)+width(t,wb)+randRange(-1.2,1.2), y:axisY(t)});
+    }
+    const stem={x0:axisX(vs),y0:axisY(vs),x1:axisX(0),y1:bottom,w:4.5};
+    return {pts, veins:[], stem, cx, cy:(top+bottom)/2, R:L/2, axisX, axisY, width, wa, wb, vs, slant, L};
+}
+
+function paintHane(g,bg,sh,pal,path)
+{
+    g.save();
+    g.clip(path);
+    const grad=g.createLinearGradient(0,sh.axisY(0),0,sh.axisY(1));
+    grad.addColorStop(0,pal.base);
+    grad.addColorStop(randRange(0.5,0.8),pal.base);
+    grad.addColorStop(1,pal.tip);
+    g.fillStyle=grad;
+    g.fillRect(0,0,TEX,TEX);
+
+    //ふちに向かってちょい暗く
+    for(const [side,W] of [[-1,sh.wa],[1,sh.wb]]){
+        const eg=g.createLinearGradient(sh.cx,0,sh.cx+side*W,0);
+        eg.addColorStop(0,"rgba(255,255,255,0.12)");
+        eg.addColorStop(0.5,"rgba(0,0,0,0)");
+        eg.addColorStop(1,"rgba(0,0,0,0.12)");
+        g.fillStyle=eg;
+        g.fillRect(side<0 ? 0 : sh.cx, 0, TEX/2, TEX);
+    }
+
+    //羽枝 いっぱい
+    g.lineWidth=1.1;
+    bg.lineWidth=0.9;
+    for(let t=sh.vs;t<1;t+=0.0035){
+        for(const [side,W] of [[-1,sh.wa],[1,sh.wb]]){
+            const w=sh.width(t,W);
+            if(w<1){ continue; }
+            const t2=Math.min(1,t+w*sh.slant*0.6/sh.L);
+            const x0=sh.axisX(t), y0=sh.axisY(t);
+            const x1=sh.axisX(t2)+side*sh.width(t2,W)*1.05, y1=sh.axisY(t2);
+            //g.strokeStyle=pal.barb;
+            //↑うすすぎ 見えない
+            g.strokeStyle= Math.random()<0.7 ? pal.barb : "rgba(255,255,255,0.35)";
+            g.beginPath();
+            g.moveTo(x0,y0);
+            g.quadraticCurveTo((x0+x1)/2,(y0+y1)/2+3,x1,y1);
+            g.stroke();
+            if(Math.random()<0.3){
+                bg.strokeStyle="rgba(255,255,255,0.35)";
+                bg.beginPath();
+                bg.moveTo(x0,y0);
+                bg.lineTo(x1,y1);
+                bg.stroke();
+            }
+        }
+    }
+    //しま
+    if(pal.band){
+        g.strokeStyle=pal.band;
+        for(let t=sh.vs+0.06;t<0.95;t+=randRange(0.08,0.12)){
+            g.lineWidth=randRange(6,12);
+            for(const side of [-1,1]){
+                g.beginPath();
+                g.moveTo(sh.axisX(t),sh.axisY(t));
+                g.lineTo(sh.axisX(t)+side*90,sh.axisY(t)-60);
+                g.stroke();
+            }
+        }
+    }
+    g.restore();
+
+    //ふちのほつれ
+    g.lineWidth=1;
+    g.strokeStyle=pal.base;
+    for(let t=sh.vs+0.03;t<0.97;t+=0.006){
+        for(const [side,W] of [[-1,sh.wa],[1,sh.wb]]){
+            if(Math.random()<0.5){ continue; }
+            const w=sh.width(t,W);
+            const x0=sh.axisX(t)+side*(w-3), y0=sh.axisY(t);
+            const len=randRange(2,7);
+            g.beginPath();
+            g.moveTo(x0,y0);
+            g.lineTo(x0+side*len,y0-len*0.7);
+            g.stroke();
+        }
+    }
+
+    //羽軸
+    g.strokeStyle=pal.shaft;
+    g.lineCap="round";
+    for(let i=0;i<40;i++){
+        const t0=i/40, t1=(i+1)/40;
+        g.lineWidth=4.2-3.2*t0;
+        g.beginPath();
+        g.moveTo(sh.axisX(t0),sh.axisY(t0));
+        g.lineTo(sh.axisX(t1),sh.axisY(t1));
+        g.stroke();
+    }
+
+    //ふわふわ 根元
+    g.lineWidth=1.2;
+    for(let i=0;i<140;i++){
+        const t=randRange(0.03,sh.vs+0.08);
+        const side= Math.random()<0.5 ? -1 : 1;
+        const x0=sh.axisX(t), y0=sh.axisY(t);
+        const len=randRange(18,60);
+        g.strokeStyle=pal.fluff;
+        g.beginPath();
+        g.moveTo(x0,y0);
+        g.bezierCurveTo(x0+side*len*0.4,y0-randRange(-10,20),x0+side*len*0.8,y0+randRange(-25,15),x0+side*len,y0-randRange(-10,30));
+        g.stroke();
+    }
+
+    //さけめ
+    const splits=Math.floor(randRange(1,4));
+    g.globalCompositeOperation="destination-out";
+    for(let i=0;i<splits;i++){
+        const side= Math.random()<0.5 ? -1 : 1;
+        const W= side<0 ? sh.wa : sh.wb;
+        const t=randRange(sh.vs+0.12,0.85);
+        const w=sh.width(t,W);
+        const t2=Math.min(1,t+w*sh.slant*0.6/sh.L);
+        const x0=sh.axisX(t)+side*randRange(4,12), y0=sh.axisY(t)-2;
+        const x1=sh.axisX(t2)+side*(sh.width(t2,W)+6), y1=sh.axisY(t2);
+        const gw=randRange(2,5);
+        g.beginPath();
+        g.moveTo(x0,y0);
+        g.lineTo(x1,y1-gw);
+        g.lineTo(x1,y1+gw);
+        g.closePath();
+        g.fill();
+    }
+    g.globalCompositeOperation="source-over";
+
+    bg.strokeStyle="rgba(255,255,255,0.9)";
+    bg.lineWidth=3;
+    bg.beginPath();
+    bg.moveTo(sh.axisX(0),sh.axisY(0));
+    for(let i=1;i<=20;i++){
+        bg.lineTo(sh.axisX(i/20),sh.axisY(i/20));
+    }
+    bg.stroke();
+}//finished
+
+
 function paintLeaf(kind)
 {
-    const shape= kind==="momiji" ? makeMomijiShape() : makeIchoShape();
-    const pal= kind==="momiji" ? MOMIJI_COLORS[Math.floor(Math.random()*MOMIJI_COLORS.length)] : ICHO_COLORS[Math.floor(Math.random()*ICHO_COLORS.length)];
+    let shape, pal;
+    if(kind==="momiji"){
+        shape=makeMomijiShape();
+        pal=MOMIJI_COLORS[Math.floor(Math.random()*MOMIJI_COLORS.length)];
+    }else if(kind==="icho"){
+        shape=makeIchoShape();
+        pal=ICHO_COLORS[Math.floor(Math.random()*ICHO_COLORS.length)];
+    }else{
+        shape=makeHaneShape();
+        //白多め
+        const i= Math.random()<0.35 ? Math.floor(Math.random()*2) : Math.floor(Math.random()*HANE_COLORS.length);
+        pal=HANE_COLORS[i];
+    }
     const path=makeLeafPath(shape.pts);
 
     const cvs=document.createElement("canvas");
@@ -300,93 +503,97 @@ function paintLeaf(kind)
     bcvs.width=TEX; bcvs.height=TEX;
     const bg=bcvs.getContext("2d");
 
-    g.save();
-    g.clip(path);
-    const grad=g.createRadialGradient(shape.cx,shape.cy,shape.R*0.05,shape.cx,shape.cy,shape.R*1.05);
-    grad.addColorStop(0,pal.inner);
-    grad.addColorStop(randRange(0.45,0.75),pal.outer);
-    grad.addColorStop(1,pal.outer);
-    g.fillStyle=grad;
-    g.fillRect(0,0,TEX,TEX);
-
-    //まだら
-    for(let i=0;i<700;i++){
-        const x=randRange(0,TEX), y=randRange(0,TEX);
-        const r=randRange(2,26);
-        const l=randRange(-1,1);
-        g.fillStyle= l>0 ? `rgba(255,${200+Math.floor(l*50)},120,${0.05*l})` : `rgba(40,5,0,${-0.06*l})`;
-        g.beginPath();
-        g.arc(x,y,r,0,Math.PI*2);
-        g.fill();
-    }
-    //黄緑っぽいとこ
-    if(Math.random()<0.3){
-        const p=polar(shape.cx,shape.cy,randRange(0,Math.PI*2),shape.R*randRange(0.1,0.4));
-        const gg=g.createRadialGradient(p.x,p.y,0,p.x,p.y,shape.R*0.5);
-        gg.addColorStop(0, kind==="momiji" ? "rgba(190,170,50,0.55)" : "rgba(150,170,40,0.5)");
-        gg.addColorStop(1,"rgba(190,170,50,0)");
-        g.fillStyle=gg;
+    if(kind==="hane"){
+        paintHane(g,bg,shape,pal,path);
+    }else{
+        g.save();
+        g.clip(path);
+        const grad=g.createRadialGradient(shape.cx,shape.cy,shape.R*0.05,shape.cx,shape.cy,shape.R*1.05);
+        grad.addColorStop(0,pal.inner);
+        grad.addColorStop(randRange(0.45,0.75),pal.outer);
+        grad.addColorStop(1,pal.outer);
+        g.fillStyle=grad;
         g.fillRect(0,0,TEX,TEX);
-    }
-    drawVeins(g,shape.veins,pal.vein,1);
-    //枯れたシミ
-    const spots=Math.floor(randRange(0,4));
-    for(let i=0;i<spots;i++){
-        const p=polar(shape.cx,shape.cy,randRange(0,Math.PI*2),shape.R*randRange(0.2,0.8));
-        const r=randRange(5,22);
-        const sg=g.createRadialGradient(p.x,p.y,0,p.x,p.y,r);
-        sg.addColorStop(0,"rgba(70,35,10,0.8)");
-        sg.addColorStop(0.7,"rgba(90,45,10,0.5)");
-        sg.addColorStop(1,"rgba(90,45,10,0)");
-        g.fillStyle=sg;
-        g.beginPath();
-        g.arc(p.x,p.y,r,0,Math.PI*2);
-        g.fill();
-    }
-    //ふちを暗く
-    g.lineWidth=12;
-    g.strokeStyle=pal.dark;
-    g.stroke(path);
-    g.restore();
-    drawStem(g,shape.stem,pal.dark.replace(/[\d.]+\)$/,"1)"));
 
-    //虫食いの穴
-    if(Math.random()<0.3){
-        const holes=Math.random()<0.5 ? 1 : 2;
-        g.globalCompositeOperation="destination-out";
-        for(let i=0;i<holes;i++){
-            for(let tries=0;tries<20;tries++){
-                const p=polar(shape.cx,shape.cy,randRange(0,Math.PI*2),shape.R*randRange(0.15,0.6));
-                if(g.isPointInPath(path,p.x,p.y)){
-                    g.beginPath();
-                    for(let j=0;j<10;j++){
-                        const q=polar(p.x,p.y,j/10*Math.PI*2,randRange(4,10));
-                        if(j===0){ g.moveTo(q.x,q.y); }else{ g.lineTo(q.x,q.y); }
+        //まだら
+        for(let i=0;i<700;i++){
+            const x=randRange(0,TEX), y=randRange(0,TEX);
+            const r=randRange(2,26);
+            const l=randRange(-1,1);
+            g.fillStyle= l>0 ? `rgba(255,${200+Math.floor(l*50)},120,${0.05*l})` : `rgba(40,5,0,${-0.06*l})`;
+            g.beginPath();
+            g.arc(x,y,r,0,Math.PI*2);
+            g.fill();
+        }
+        //黄緑っぽいとこ
+        if(Math.random()<0.3){
+            const p=polar(shape.cx,shape.cy,randRange(0,Math.PI*2),shape.R*randRange(0.1,0.4));
+            const gg=g.createRadialGradient(p.x,p.y,0,p.x,p.y,shape.R*0.5);
+            gg.addColorStop(0, kind==="momiji" ? "rgba(190,170,50,0.55)" : "rgba(150,170,40,0.5)");
+            gg.addColorStop(1,"rgba(190,170,50,0)");
+            g.fillStyle=gg;
+            g.fillRect(0,0,TEX,TEX);
+        }
+        drawVeins(g,shape.veins,pal.vein,1);
+        //枯れたシミ
+        const spots=Math.floor(randRange(0,4));
+        for(let i=0;i<spots;i++){
+            const p=polar(shape.cx,shape.cy,randRange(0,Math.PI*2),shape.R*randRange(0.2,0.8));
+            const r=randRange(5,22);
+            const sg=g.createRadialGradient(p.x,p.y,0,p.x,p.y,r);
+            sg.addColorStop(0,"rgba(70,35,10,0.8)");
+            sg.addColorStop(0.7,"rgba(90,45,10,0.5)");
+            sg.addColorStop(1,"rgba(90,45,10,0)");
+            g.fillStyle=sg;
+            g.beginPath();
+            g.arc(p.x,p.y,r,0,Math.PI*2);
+            g.fill();
+        }
+        //ふちを暗く
+        g.lineWidth=12;
+        g.strokeStyle=pal.dark;
+        g.stroke(path);
+        g.restore();
+        drawStem(g,shape.stem,pal.dark.replace(/[\d.]+\)$/,"1)"));
+
+        //虫食いの穴
+        if(Math.random()<0.3){
+            const holes=Math.random()<0.5 ? 1 : 2;
+            g.globalCompositeOperation="destination-out";
+            for(let i=0;i<holes;i++){
+                for(let tries=0;tries<20;tries++){
+                    const p=polar(shape.cx,shape.cy,randRange(0,Math.PI*2),shape.R*randRange(0.15,0.6));
+                    if(g.isPointInPath(path,p.x,p.y)){
+                        g.beginPath();
+                        for(let j=0;j<10;j++){
+                            const q=polar(p.x,p.y,j/10*Math.PI*2,randRange(4,10));
+                            if(j===0){ g.moveTo(q.x,q.y); }else{ g.lineTo(q.x,q.y); }
+                        }
+                        g.closePath();
+                        g.fill();
+                        break;
                     }
-                    g.closePath();
-                    g.fill();
-                    break;
                 }
             }
+            g.globalCompositeOperation="source-over";
         }
-        g.globalCompositeOperation="source-over";
-    }
 
-    //凹凸
-    bg.fillStyle="#808080";
-    bg.fillRect(0,0,TEX,TEX);
-    bg.save();
-    bg.clip(path);
-    for(let i=0;i<300;i++){
-        const c= Math.random()<0.5 ? 255 : 0;
-        bg.fillStyle=`rgba(${c},${c},${c},0.05)`;
-        bg.beginPath();
-        bg.arc(randRange(0,TEX),randRange(0,TEX),randRange(3,18),0,Math.PI*2);
-        bg.fill();
+        //凹凸
+        bg.fillStyle="#808080";
+        bg.fillRect(0,0,TEX,TEX);
+        bg.save();
+        bg.clip(path);
+        for(let i=0;i<300;i++){
+            const c= Math.random()<0.5 ? 255 : 0;
+            bg.fillStyle=`rgba(${c},${c},${c},0.05)`;
+            bg.beginPath();
+            bg.arc(randRange(0,TEX),randRange(0,TEX),randRange(3,18),0,Math.PI*2);
+            bg.fill();
+        }
+        drawVeins(bg,shape.veins,"rgba(255,255,255,0.8)",1.4);
+        bg.restore();
+        drawStem(bg,shape.stem,"#e0e0e0");
     }
-    drawVeins(bg,shape.veins,"rgba(255,255,255,0.8)",1.4);
-    bg.restore();
-    drawStem(bg,shape.stem,"#e0e0e0");
 
     //当たり判定用
     const img=g.getImageData(0,0,TEX,TEX).data;
@@ -420,14 +627,17 @@ function paintLeaf(kind)
     const bump=new THREE.CanvasTexture(bcvs);
 
     //実物の大きさ(m)
-    const size= kind==="momiji" ? randRange(0.11,0.14)/(2*shape.R/TEX) : randRange(0.075,0.095)/(2*shape.R/TEX);
+    let len=randRange(0.075,0.095);
+    if(kind==="momiji"){ len=randRange(0.11,0.14); }
+    if(kind==="hane"){ len=randRange(0.11,0.16); }
+    const size=len/(2*shape.R/TEX);
     const px2m=size/TEX;
     return {
         kind, map, bump, mask, size, edge,
         span:shape.R*px2m,
         cxPx:sx/count, cyPx:sy/count,
         area:count*px2m*px2m,
-        density: kind==="momiji" ? 0.09 : 0.12,
+        density: kind==="momiji" ? 0.09 : (kind==="hane" ? 0.06 : 0.12),
     };
 }//finished
 
@@ -636,9 +846,10 @@ makeTrees();
 
 // ===== 葉っぱ =====
 
-const variants={momiji:[], icho:[]};
+const variants={momiji:[], icho:[], hane:[]};
 for(let i=0;i<8;i++){ variants.momiji.push(paintLeaf("momiji")); }
 for(let i=0;i<5;i++){ variants.icho.push(paintLeaf("icho")); }
+for(let i=0;i<8;i++){ variants.hane.push(paintLeaf("hane")); }
 
 function hookLeafShader(mat)
 {
@@ -671,7 +882,10 @@ function makeLeaf(v)
     const half=v.size/2;
     const ox=(v.cxPx/TEX-0.5)*v.size;
     const oz=(v.cyPx/TEX-0.5)*v.size;
-    const bend={cup:randRange(-0.5,1.3), fold:randRange(0,0.4), twist:randRange(-0.8,0.8)};
+    let bend={cup:randRange(-0.5,1.3), fold:randRange(0,0.4), twist:randRange(-0.8,0.8)};
+    if(v.kind==="hane"){
+        bend={cup:randRange(-0.2,0.5), fold:randRange(0.1,0.5), twist:randRange(-0.5,0.5)};
+    }
 
     const geo=new THREE.PlaneGeometry(v.size,v.size,18,18);
     geo.rotateX(-Math.PI/2);
@@ -720,12 +934,21 @@ function makeLeaf(v)
         kRotLin:ip,
         asymRoll:randRange(-0.035,0.035)*(0.5+Math.abs(bend.twist)),
         asymSpin:randRange(-0.018,0.018),
+        aeroOff:null,
     };
+    if(v.kind==="hane"){
+        //根元が重い 空気は先っぽ寄りで受ける
+        lf.aeroOff=new THREE.Vector3(0,0,-v.span*PHYS.haneOff);
+    }
     return lf;
 }
 
-function pickVariant()
+function pickVariant(thing)
 {
+    if((thing||settings.thing)==="hane"){
+        const hl=variants.hane;
+        return hl[Math.floor(Math.random()*hl.length)];
+    }
     let kind=settings.kind;
     if(kind==="mix"){
         kind= Math.random()<0.6 ? "momiji" : "icho";
@@ -779,6 +1002,7 @@ const _F=new THREE.Vector3(), _T=new THREE.Vector3(), _Fn=new THREE.Vector3(), _
 const _arm=new THREE.Vector3(), _tmp=new THREE.Vector3(), _ax=new THREE.Vector3(), _wp=new THREE.Vector3();
 const _acc=new THREE.Vector3(), _wl=new THREE.Vector3(), _Tl=new THREE.Vector3(), _Iw=new THREE.Vector3();
 const _qi=new THREE.Quaternion();
+const _tmp2=new THREE.Vector3();
 
 function stepLeaf(lf,dt,t)
 {
@@ -813,6 +1037,12 @@ function stepLeaf(lf,dt,t)
         _ax.set(1,0,0).applyQuaternion(q);
         _T.addScaledVector(_ax,dyn*lf.chord*lf.asymRoll*PHYS.asym);
         _T.addScaledVector(_n,dyn*lf.chord*lf.asymSpin*PHYS.asym);
+
+        if(lf.aeroOff){
+            _arm.copy(lf.aeroOff).applyQuaternion(q);
+            _tmp.copy(_Fn).addScaledVector(_ut,-0.5*RHO*lf.area*PHYS.ct*sp);
+            _T.add(_tmp2.crossVectors(_arm,_tmp));
+        }
     }
 
     //回転の空気抵抗
@@ -926,7 +1156,7 @@ function removeLeaf(lf)
 function scatterGroundLeaves(n)
 {
     for(let i=0;i<n;i++){
-        const lf=makeLeaf(pickVariant());
+        const lf=makeLeaf(pickVariant("leaf"));
         const z=randRange(-4,1.3);
         lf.p.set(randRange(-1.5,1.5)*(2.2-z*0.5),0.006+Math.random()*0.008,z);
         lf.q.setFromEuler(new THREE.Euler(Math.random()<0.75?0:Math.PI,randRange(0,Math.PI*2),0,"YXZ"));
@@ -1063,13 +1293,18 @@ function noteFreq(semi)
     return 523.25*Math.pow(2,semi/12);
 }
 
-function playCatch(n,suka)
+function playCatch(n,suka,soft)
 {
     if(canPlay()==false){ return; }
     const t=actx.currentTime+0.005;
-    //カサッ 3つぶ
-    for(let i=0;i<3;i++){
-        playNoise(t+i*0.018+Math.random()*0.006,0.05,"bandpass",randRange(2600,4200),1800,0.9,suka ? 0.5 : 0.35);
+    if(soft){
+        //ふわっ
+        playNoise(t,0.22,"lowpass",3200,600,0.6,suka ? 0.4 : 0.28);
+    }else{
+        //カサッ 3つぶ
+        for(let i=0;i<3;i++){
+            playNoise(t+i*0.018+Math.random()*0.006,0.05,"bandpass",randRange(2600,4200),1800,0.9,suka ? 0.5 : 0.35);
+        }
     }
     const idx=Math.min(n-1,SCALE.length-1);
     const f=noteFreq(SCALE[idx]);
@@ -1287,7 +1522,7 @@ function scoreCatch(lf,cx,cy)
     combo++;
     hud.firstChild.textContent="とった "+score;
     const suka= settings.mode==="suka";
-    playCatch(combo,suka);
+    playCatch(combo,suka,lf.variant.kind==="hane");
     if(suka){
         const big= combo%5==0;
         burstFx(cx,cy,big ? 60 : 26,true);
@@ -1431,6 +1666,20 @@ modeIra.addEventListener("click",()=>{ initAudio(); setMode("ira"); });
 modeSuka.addEventListener("click",()=>{ initAudio(); setMode("suka"); });
 setMode(settings.mode);
 
+const thingLeaf=document.getElementById("thingLeaf");
+const thingHane=document.getElementById("thingHane");
+
+function setThing(t)
+{
+    settings.thing=t;
+    thingLeaf.classList.toggle("on",t==="leaf");
+    thingHane.classList.toggle("on",t==="hane");
+    try{ localStorage.setItem("ochiba_thing",t); }catch(e){}
+}
+thingLeaf.addEventListener("click",()=>{ initAudio(); setThing("leaf"); });
+thingHane.addEventListener("click",()=>{ initAudio(); setThing("hane"); });
+setThing(settings.thing);
+
 function updateSoundBtn()
 {
     soundBtn.textContent= settings.sound ? "🔊" : "🔇";
@@ -1560,7 +1809,7 @@ function tick()
 requestAnimationFrame(tick);
 
 //デバッグ用
-window.__game={setMode, PHYS, makeLeaf, pickVariant, leaves, settings, stepLeaf, spawnLeaf, startGust, handleTap, camera};
+window.__game={variants, setThing, setMode, PHYS, makeLeaf, pickVariant, leaves, settings, stepLeaf, spawnLeaf, startGust, handleTap, camera};
 </script>
 </body>
 </html>
