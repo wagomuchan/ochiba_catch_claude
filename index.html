@@ -40,11 +40,25 @@ html,body{margin:0;height:100%;overflow:hidden;background:#20160f;color:var(--fg
 .ripple{position:fixed;width:12px;height:12px;margin:-8px 0 0 -8px;border:2px solid rgba(255,255,255,.85);
     border-radius:50%;pointer-events:none;animation:ripple .5s ease-out forwards}
 @keyframes ripple{to{transform:scale(4);opacity:0}}
+#fx{position:fixed;left:0;top:0;width:100vw;height:100vh;height:100dvh;pointer-events:none}
+#modeBox{position:fixed;top:calc(max(12px,env(safe-area-inset-top)) + 54px);left:16px;display:flex;border-radius:999px;
+    background:var(--panel);padding:3px;gap:2px}
+#modeBox button{border:none;background:none;color:var(--fg);font-size:13px;font-weight:bold;padding:7px 12px;border-radius:999px;cursor:pointer;font-family:inherit}
+#modeBox button.on{background:var(--accent);color:#3a1d05}
+#soundBtn{position:fixed;top:max(10px,env(safe-area-inset-top));right:68px;width:44px;height:44px;border-radius:50%;
+    border:none;background:var(--panel);color:var(--fg);font-size:20px;cursor:pointer;}
+.pop.big{font-size:30px;color:#fff3b0;text-shadow:0 0 12px rgba(255,190,60,.9),0 2px 6px rgba(0,0,0,.6)}
 </style>
 </head>
 <body>
 <canvas id="view"></canvas>
 <div id="hud">とった 0<small>落ち葉をタップしてキャッチ</small></div>
+<canvas id="fx"></canvas>
+<div id="modeBox">
+    <button id="modeIra">イライラ</button>
+    <button id="modeSuka">スカッと</button>
+</div>
+<button id="soundBtn" aria-label="音">🔊</button>
 <button id="gearBtn" aria-label="設定">⚙</button>
 <div id="panel">
     <label>葉っぱの枚数 <span id="countVal">8</span></label>
@@ -75,7 +89,14 @@ const GRAVITY=9.8;
 const TEX=512;
 const MAX_GROUND=170;
 
-const settings={count:8, wind:0.15, turb:1.0, kind:"mix", slow:false};
+const settings={count:8, wind:0.15, turb:1.0, kind:"mix", slow:false, mode:"ira", sound:true};
+try{
+    const m=localStorage.getItem("ochiba_mode");
+    if(m==="suka"||m==="ira"){ settings.mode=m; }
+    if(localStorage.getItem("ochiba_sound")==="off"){ settings.sound=false; }
+}catch(e){
+    //プライベートモードとか
+}
 const PHYS={cn90:1.5, cnLift:3.2, ct:0.12, cop:0.24, rotDamp:0.9, rotLin:0.4, rotR:0.8, asym:0.8};
 
 function randRange(a,b)
@@ -916,6 +937,262 @@ function scatterGroundLeaves(n)
 scatterGroundLeaves(130);
 
 
+// ===== 音 =====
+//ぜんぶその場で合成
+
+let actx=null;
+let master=null;
+let verb=null;
+let noiseBuf=null;
+
+function initAudio()
+{
+    if(actx){
+        if(actx.state==="suspended"){ actx.resume(); }
+        return;
+    }
+    const AC=window.AudioContext||window.webkitAudioContext;
+    if(!AC){ return; }
+    actx=new AC();
+    const comp=actx.createDynamicsCompressor();
+    comp.threshold.value=-14;
+    comp.ratio.value=4;
+    comp.connect(actx.destination);
+    master=actx.createGain();
+    master.gain.value=0.75;
+    master.connect(comp);
+
+    //ひびき 減衰ノイズ
+    const len=Math.floor(actx.sampleRate*1.6);
+    const ir=actx.createBuffer(2,len,actx.sampleRate);
+    for(let ch=0;ch<2;ch++){
+        const d=ir.getChannelData(ch);
+        for(let i=0;i<len;i++){
+            d[i]=(Math.random()*2-1)*Math.pow(1-i/len,3);
+        }
+    }
+    const conv=actx.createConvolver();
+    conv.buffer=ir;
+    verb=actx.createGain();
+    verb.gain.value=0.3;
+    verb.connect(conv);
+    conv.connect(master);
+
+    noiseBuf=actx.createBuffer(1,actx.sampleRate,actx.sampleRate);
+    const nd=noiseBuf.getChannelData(0);
+    for(let i=0;i<nd.length;i++){ nd[i]=Math.random()*2-1; }
+}//finished
+
+function canPlay()
+{
+    if(settings.sound===false||!actx){
+        return false;
+    }
+    return true;
+}
+
+function playNoise(t,dur,type,f0,f1,q,vol)
+{
+    const src=actx.createBufferSource();
+    src.buffer=noiseBuf;
+    const flt=actx.createBiquadFilter();
+    flt.type=type;
+    flt.frequency.setValueAtTime(f0,t);
+    flt.frequency.exponentialRampToValueAtTime(f1,t+dur);
+    flt.Q.value=q;
+    const g=actx.createGain();
+    g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(vol,t+0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+    src.connect(flt);
+    flt.connect(g);
+    g.connect(master);
+    src.start(t,Math.random()*0.5);
+    src.stop(t+dur+0.02);
+}
+
+function playTone(t,freq,dur,vol,wet)
+{
+    //鈴っぽい 倍音ちょっと
+    const parts=[[1,1],[2,0.32],[3.01,0.12],[4.2,0.05]];
+    const g=actx.createGain();
+    g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(vol,t+0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+    g.connect(master);
+    if(wet>0){
+        const s=actx.createGain();
+        s.gain.value=wet;
+        g.connect(s);
+        s.connect(verb);
+    }
+    for(const [m,a] of parts){
+        const o=actx.createOscillator();
+        o.type="sine";
+        o.frequency.value=freq*m;
+        const og=actx.createGain();
+        og.gain.value=a;
+        o.connect(og);
+        og.connect(g);
+        o.start(t);
+        o.stop(t+dur+0.05);
+    }
+}
+
+function playThump(t,vol)
+{
+    const o=actx.createOscillator();
+    o.type="sine";
+    o.frequency.setValueAtTime(190,t);
+    o.frequency.exponentialRampToValueAtTime(55,t+0.12);
+    const g=actx.createGain();
+    g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(vol,t+0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+0.16);
+    o.connect(g);
+    g.connect(master);
+    o.start(t);
+    o.stop(t+0.2);
+}
+
+//ペンタトニック
+const SCALE=[0,2,4,7,9,12,14,16,19,21,24,26,28,31];
+
+function noteFreq(semi)
+{
+    return 523.25*Math.pow(2,semi/12);
+}
+
+function playCatch(n,suka)
+{
+    if(canPlay()==false){ return; }
+    const t=actx.currentTime+0.005;
+    //カサッ 3つぶ
+    for(let i=0;i<3;i++){
+        playNoise(t+i*0.018+Math.random()*0.006,0.05,"bandpass",randRange(2600,4200),1800,0.9,suka ? 0.5 : 0.35);
+    }
+    const idx=Math.min(n-1,SCALE.length-1);
+    const f=noteFreq(SCALE[idx]);
+    if(suka){
+        playThump(t,0.55);
+        playTone(t+0.01,f,1.1,0.32,0.8);
+        playTone(t+0.01,f*1.5,0.7,0.1,0.8);//5度上かさねる
+        if(n>=2){
+            playTone(t+0.07,f*2,0.6,0.08,1);
+        }
+        if(n%5==0){
+            //ファンファーレ
+            for(let i=0;i<5;i++){
+                playTone(t+0.09+i*0.06,noteFreq(SCALE[Math.min(idx+i+1,SCALE.length-1)]+12),0.9,0.12,1);
+            }
+            playNoise(t+0.08,0.9,"highpass",6000,9000,0.5,0.08);
+        }
+    }else{
+        playTone(t+0.01,f,0.9,0.22,0.5);
+    }
+}
+
+function playMiss(kind)
+{
+    if(canPlay()==false){ return; }
+    const t=actx.currentTime+0.005;
+    if(kind==="gap"){
+        //ピュー
+        const o=actx.createOscillator();
+        o.type="triangle";
+        o.frequency.setValueAtTime(880,t);
+        o.frequency.exponentialRampToValueAtTime(330,t+0.28);
+        const g=actx.createGain();
+        g.gain.setValueAtTime(0.0001,t);
+        g.gain.exponentialRampToValueAtTime(0.12,t+0.01);
+        g.gain.exponentialRampToValueAtTime(0.0001,t+0.32);
+        o.connect(g);
+        g.connect(master);
+        o.start(t);
+        o.stop(t+0.35);
+    }
+    playNoise(t,0.22,"lowpass",1400,300,0.7,0.12);
+}
+
+
+// ===== エフェクト =====
+
+const fxCanvas=document.getElementById("fx");
+const fx=fxCanvas.getContext("2d");
+const parts=[];
+const rings=[];
+
+function resizeFx()
+{
+    const dpr=Math.min(window.devicePixelRatio,2);
+    fxCanvas.width=Math.floor(window.innerWidth*dpr);
+    fxCanvas.height=Math.floor(window.innerHeight*dpr);
+    fx.setTransform(dpr,0,0,dpr,0,0);
+}
+
+function burstFx(x,y,n,big)
+{
+    rings.push({x,y,t:0,max:big ? 90 : 50});
+    const cols= big ? ["#fff3b0","#ffd25a","#ff9a3c","#ff5a3c","#ffe9e0"] : ["#fff3b0","#ffd25a"];
+    for(let i=0;i<n;i++){
+        const a=randRange(0,Math.PI*2);
+        const sp=randRange(80,big ? 420 : 220);
+        parts.push({
+            x, y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp-(big ? 120 : 40),
+            life:randRange(0.5,1.1), t:0,
+            r:randRange(2,big ? 6 : 3.5),
+            col:cols[Math.floor(Math.random()*cols.length)],
+            leaf: big&&Math.random()<0.45,
+            rot:randRange(0,6), vr:randRange(-12,12),
+        });
+    }
+}
+
+function updateFx(dt)
+{
+    fx.clearRect(0,0,window.innerWidth,window.innerHeight);
+    for(let i=rings.length-1;i>=0;i--){
+        const r=rings[i];
+        r.t+=dt;
+        const k=r.t/0.45;
+        if(k>=1){ rings.splice(i,1); continue; }
+        fx.strokeStyle=`rgba(255,230,150,${(1-k)*0.9})`;
+        fx.lineWidth=3*(1-k)+1;
+        fx.beginPath();
+        fx.arc(r.x,r.y,8+r.max*(1-Math.pow(1-k,3)),0,Math.PI*2);
+        fx.stroke();
+    }
+    fx.globalCompositeOperation="lighter";
+    for(let i=parts.length-1;i>=0;i--){
+        const p=parts[i];
+        p.t+=dt;
+        if(p.t>=p.life){ parts.splice(i,1); continue; }
+        p.vx*=Math.pow(0.04,dt);
+        p.vy=p.vy*Math.pow(0.04,dt)+380*dt;
+        p.x+=p.vx*dt;
+        p.y+=p.vy*dt;
+        p.rot+=p.vr*dt;
+        const a=1-p.t/p.life;
+        fx.globalAlpha=a;
+        fx.fillStyle=p.col;
+        if(p.leaf){
+            fx.save();
+            fx.globalCompositeOperation="source-over";
+            fx.translate(p.x,p.y);
+            fx.rotate(p.rot);
+            fx.fillRect(-p.r,-p.r*0.5,p.r*2,p.r);
+            fx.restore();
+        }else{
+            fx.beginPath();
+            fx.arc(p.x,p.y,p.r*(0.5+a*0.5),0,Math.PI*2);
+            fx.fill();
+        }
+    }
+    fx.globalAlpha=1;
+    fx.globalCompositeOperation="source-over";
+}
+
+
 // ===== タップ =====
 
 const raycaster=new THREE.Raycaster();
@@ -1003,8 +1280,52 @@ function catchLeaf(lf)
     lf.mesh.castShadow=false;
 }
 
+function scoreCatch(lf,cx,cy)
+{
+    catchLeaf(lf);
+    score++;
+    combo++;
+    hud.firstChild.textContent="とった "+score;
+    const suka= settings.mode==="suka";
+    playCatch(combo,suka);
+    if(suka){
+        const big= combo%5==0;
+        burstFx(cx,cy,big ? 60 : 26,true);
+        showPop(cx,cy, combo>=2 ? `${combo}れんぞく！` : "キャッチ！", big ? "big" : "hit");
+    }else{
+        burstFx(cx,cy,10,false);
+        showPop(cx,cy, combo>=2 ? `キャッチ！ ${combo}れんぞく` : "キャッチ！","hit");
+    }
+}
+
+function findNearLeaf(cx,cy)
+{
+    //画面の上でいちばん近い葉っぱ
+    const tanH=Math.tan(THREE.MathUtils.degToRad(camera.fov/2));
+    const p=new THREE.Vector3();
+    let best=null;
+    let bestD=Infinity;
+    for(const lf of leaves){
+        if(lf.state!=="fall"){ continue; }
+        p.copy(lf.p).project(camera);
+        if(p.z>1){ continue; }
+        const sx=(p.x+1)/2*window.innerWidth;
+        const sy=(1-p.y)/2*window.innerHeight;
+        const dist=camera.position.distanceTo(lf.p);
+        const rpx=lf.variant.span/(2*tanH*dist)*window.innerHeight;
+        const reach=rpx+95;//指1本ぶん
+        const d=Math.hypot(sx-cx,sy-cy);
+        if(d<reach&&d<bestD){
+            bestD=d;
+            best=lf;
+        }
+    }
+    return best;
+}
+
 function handleTap(cx,cy)
 {
+    initAudio();
     showRipple(cx,cy);
     ndc.set(cx/window.innerWidth*2-1, -(cy/window.innerHeight)*2+1);
     raycaster.setFromCamera(ndc,camera);
@@ -1018,25 +1339,38 @@ function handleTap(cx,cy)
     for(const h of hits){
         const lf=leaves.find(l=>l.mesh===h.object);
         if(isOpaque(lf,h.uv)){
-            catchLeaf(lf);
-            score++;
-            combo++;
-            hud.firstChild.textContent="とった "+score;
-            showPop(cx,cy, combo>=2 ? `キャッチ！ ${combo}れんぞく` : "キャッチ！","hit");
+            scoreCatch(lf,cx,cy);
             return;
         }
         if(isInGap(lf,h.uv)){
             gap=true;
         }
     }
+
+    if(settings.mode==="suka"){
+        const lf=findNearLeaf(cx,cy);
+        if(lf){
+            scoreCatch(lf,cx,cy);
+            return;
+        }
+    }
+
     combo=0;
     const mm=getMissDist(raycaster.ray)*1000;
     //console.log("miss",mm);
+    if(settings.mode==="suka"){
+        playMiss("air");
+        showPop(cx,cy,"おしい！");
+        return;
+    }
     if(gap){
+        playMiss("gap");
         showPop(cx,cy,`すきま！ あと ${mm.toFixed(1)}mm`);
     }else if(mm<40){
+        playMiss("gap");
         showPop(cx,cy,`あと ${mm.toFixed(1)}mm`);
     }else{
+        playMiss("air");
         showPop(cx,cy,"スカッ");
     }
 }
@@ -1078,6 +1412,37 @@ document.getElementById("oneBtn").addEventListener("click",()=>{
 });
 const info=document.getElementById("info");
 
+const modeIra=document.getElementById("modeIra");
+const modeSuka=document.getElementById("modeSuka");
+const soundBtn=document.getElementById("soundBtn");
+
+function setMode(m)
+{
+    settings.mode=m;
+    modeIra.classList.toggle("on",m==="ira");
+    modeSuka.classList.toggle("on",m==="suka");
+    hud.lastChild.textContent= m==="suka" ? "だいたいでつかめる！" : "形ぴったりじゃないとすり抜ける";
+    score=0;
+    combo=0;
+    hud.firstChild.textContent="とった 0";
+    try{ localStorage.setItem("ochiba_mode",m); }catch(e){}
+}
+modeIra.addEventListener("click",()=>{ initAudio(); setMode("ira"); });
+modeSuka.addEventListener("click",()=>{ initAudio(); setMode("suka"); });
+setMode(settings.mode);
+
+function updateSoundBtn()
+{
+    soundBtn.textContent= settings.sound ? "🔊" : "🔇";
+}
+soundBtn.addEventListener("click",()=>{
+    initAudio();
+    settings.sound=!settings.sound;
+    updateSoundBtn();
+    try{ localStorage.setItem("ochiba_sound",settings.sound ? "on" : "off"); }catch(e){}
+});
+updateSoundBtn();
+
 
 // ===== ループ =====
 
@@ -1090,13 +1455,15 @@ function resize()
     camera.fov= camera.aspect<0.8 ? 62 : 55;
     camera.updateProjectionMatrix();
 }
-window.addEventListener("resize",resize);
+window.addEventListener("resize",()=>{ resize(); resizeFx(); });
 resize();
+resizeFx();
 
 const clock=new THREE.Clock();
 let simTime=0;
 let spawnTimer=0;
 let infoTimer=0;
+let lastFx=0;
 
 function update(dt)
 {
@@ -1171,6 +1538,8 @@ function tick()
     let dt=Math.min(clock.getDelta(),1/30);
     if(settings.slow){ dt*=0.25; }
     update(dt);
+    updateFx(Math.min(clock.elapsedTime-lastFx,1/20));
+    lastFx=clock.elapsedTime;
 
     camera.updateMatrixWorld();
     leafUniforms.sunDir.value.copy(sunDir).transformDirection(camera.matrixWorldInverse);
@@ -1191,7 +1560,7 @@ function tick()
 requestAnimationFrame(tick);
 
 //デバッグ用
-window.__game={PHYS, makeLeaf, pickVariant, leaves, settings, stepLeaf, spawnLeaf, startGust, handleTap, camera};
+window.__game={setMode, PHYS, makeLeaf, pickVariant, leaves, settings, stepLeaf, spawnLeaf, startGust, handleTap, camera};
 </script>
 </body>
 </html>
