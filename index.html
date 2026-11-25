@@ -49,6 +49,18 @@ html,body{margin:0;height:100%;overflow:hidden;background:#20160f;color:var(--fg
     background:var(--panel);padding:3px;gap:2px}
 #thingBox button{border:none;background:none;color:var(--fg);font-size:13px;font-weight:bold;padding:7px 12px;border-radius:999px;cursor:pointer;font-family:inherit}
 #thingBox button.on{background:#f3efe6;color:#3a2a1a}
+#prog{position:fixed;left:50%;bottom:max(18px,env(safe-area-inset-bottom));transform:translateX(-50%);
+    width:min(300px,calc(100vw - 32px));text-align:center;font-size:13px;font-weight:bold;pointer-events:none;
+    text-shadow:0 1px 4px rgba(0,0,0,.7)}
+#progBar{margin-top:6px;height:6px;border-radius:3px;background:rgba(0,0,0,.35);overflow:hidden}
+#progBar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#ffd25a,#ff8a3c);border-radius:3px;transition:width .3s}
+#fade{position:fixed;inset:0;background:#fff8ee;opacity:0;pointer-events:none;transition:opacity .9s}
+#fade.on{opacity:1}
+#stageTitle{position:fixed;left:0;right:0;top:38%;text-align:center;pointer-events:none;opacity:0;transition:opacity .8s;
+    font-size:34px;font-weight:bold;letter-spacing:.08em;text-shadow:0 2px 12px rgba(0,0,0,.55)}
+#stageTitle small{display:block;font-size:14px;letter-spacing:.1em;opacity:.9;margin-bottom:6px}
+#stageTitle em{display:block;font-style:normal;font-size:15px;margin-top:6px;opacity:.9}
+#stageTitle.show{opacity:1}
 #soundBtn{position:fixed;top:max(10px,env(safe-area-inset-top));right:68px;width:44px;height:44px;border-radius:50%;
     border:none;background:var(--panel);color:var(--fg);font-size:20px;cursor:pointer;}
 .pop.big{font-size:30px;color:#fff3b0;text-shadow:0 0 12px rgba(255,190,60,.9),0 2px 6px rgba(0,0,0,.6)}
@@ -67,6 +79,9 @@ html,body{margin:0;height:100%;overflow:hidden;background:#20160f;color:var(--fg
     <button id="thingHane">🪶 羽</button>
 </div>
 <button id="soundBtn" aria-label="音">🔊</button>
+<div id="prog"><span id="progText"></span><div id="progBar"><i></i></div></div>
+<div id="fade"></div>
+<div id="stageTitle"></div>
 <button id="gearBtn" aria-label="設定">⚙</button>
 <div id="panel">
     <label>葉っぱの枚数 <span id="countVal">8</span></label>
@@ -75,6 +90,8 @@ html,body{margin:0;height:100%;overflow:hidden;background:#20160f;color:var(--fg
     <input id="wind" type="range" min="0" max="2" step="0.05" value="0.15">
     <label>空気のゆらぎ <span id="turbVal">1.0</span></label>
     <input id="turb" type="range" min="0" max="2.5" step="0.1" value="1">
+    <label>景色</label>
+    <select id="sceneSel"></select>
     <label>落ち葉の種類</label>
     <select id="kind">
         <option value="mix">まぜる</option>
@@ -91,6 +108,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#20160f;color:var(--fg
 
 <script type="module">
 import * as THREE from "./lib/three.module.min.js";
+import * as SC from "./scenery.js";
 
 const RHO=1.2;
 const GRAVITY=9.8;
@@ -667,7 +685,7 @@ camera.lookAt(camTarget);
 //太陽 うしろから
 const sunDir=new THREE.Vector3(-0.35,0.42,-1).normalize();
 const sunColor=new THREE.Color("#ffd9a8");
-const sunPower=3.2;
+let sunPower=3.2;
 const sun=new THREE.DirectionalLight(sunColor,sunPower);
 sun.position.copy(sunDir).multiplyScalar(10);
 sun.castShadow=true;
@@ -678,7 +696,8 @@ sun.shadow.bias=-0.0004;
 sun.shadow.normalBias=0.02;
 scene.add(sun);
 scene.add(sun.target);
-scene.add(new THREE.HemisphereLight("#bcd4f0","#6a4c30",1.1));
+const hemi=new THREE.HemisphereLight("#bcd4f0","#6a4c30",1.1);
+scene.add(hemi);
 
 const leafUniforms={
     sunDir:{value:new THREE.Vector3()},
@@ -724,7 +743,8 @@ function makeSky()
     const sky=new THREE.Mesh(new THREE.SphereGeometry(60,32,16),mat);
     return sky;
 }
-scene.add(makeSky());
+const sky=makeSky();
+scene.add(sky);
 
 function makeGroundTexture()
 {
@@ -774,6 +794,7 @@ const TREE_COLORS=[
     ["#e8b020","#f5d040","#d89010","#c8c040"],
     ["#d84a1a","#f0a030","#b82818","#e8c050"],
     ["#5a7a30","#7a8a38","#c89a30","#4a6a2a"],
+    ["#f5d83a","#f0c020","#fbe470","#e8b818"],
 ];
 
 function makeTreeTexture(pal)
@@ -818,30 +839,46 @@ function makeTreeTexture(pal)
     return tex;
 }
 
-function makeTrees()
+const treeTexCache={};
+
+function getTreeTex(pi,k)
 {
-    const texs=[];
-    for(let i=0;i<8;i++){
-        texs.push(makeTreeTexture(TREE_COLORS[i%TREE_COLORS.length]));
+    const key=pi+"_"+k;
+    if(!treeTexCache[key]){
+        treeTexCache[key]=makeTreeTexture(TREE_COLORS[pi]);
     }
-    for(let i=0;i<80;i++){
+    return treeTexCache[key];
+}
+
+function addTree(group,pals,x,z,h)
+{
+    const pi=pals[Math.floor(Math.random()*pals.length)];
+    const mat=new THREE.MeshBasicMaterial({map:getTreeTex(pi,Math.floor(Math.random()*3)), alphaTest:0.4, side:THREE.DoubleSide, color:new THREE.Color(0.85,0.8,0.75)});
+    const m=new THREE.Mesh(new THREE.PlaneGeometry(h*0.8,h),mat);
+    m.position.set(x,h/2-0.1,z);
+    m.lookAt(camera.position.x,h/2,camera.position.z);
+    group.add(m);
+    return m;
+}
+
+function makeTrees(group,pals,n,clearX,clearZ)
+{
+    //const mat=new THREE.MeshLambertMaterial({...});
+    //↑逆光でまっくろ
+    const sr=sunDir.x/(-sunDir.z);
+    for(let i=0;i<n;i++){
         const z=randRange(-38,-13);
         let x=randRange(-1,1)*(8-z*0.9);
         //太陽のとこはあける
-        if(Math.abs(x/(-z)+0.35)<0.12){
-            x+=Math.sign(x+0.35*(-z)||1)*(-z)*0.15;
+        if(Math.abs(x/(-z)-sr)<0.12){
+            x+=Math.sign(x-sr*(-z)||1)*(-z)*0.15;
         }
-        const h=randRange(6,11);
-        //const mat=new THREE.MeshLambertMaterial({...});
-        //↑逆光でまっくろ
-        const mat=new THREE.MeshBasicMaterial({map:texs[Math.floor(Math.random()*texs.length)], alphaTest:0.4, side:THREE.DoubleSide, color:new THREE.Color(0.85,0.8,0.75)});
-        const m=new THREE.Mesh(new THREE.PlaneGeometry(h*0.8,h),mat);
-        m.position.set(x,h/2-0.1,z);
-        m.lookAt(camera.position.x,h/2,camera.position.z);
-        scene.add(m);
+        if(Math.abs(x)<clearX&&z>clearZ){
+            x=Math.sign(x||1)*(clearX+randRange(0,4));
+        }
+        addTree(group,pals,x,z,randRange(6,11));
     }
 }
-makeTrees();
 
 
 // ===== 葉っぱ =====
@@ -951,7 +988,7 @@ function pickVariant(thing)
     }
     let kind=settings.kind;
     if(kind==="mix"){
-        kind= Math.random()<0.6 ? "momiji" : "icho";
+        kind= Math.random()<SCENES[sceneIdx].leafMix ? "momiji" : "icho";
     }
     const list=variants[kind];
     return list[Math.floor(Math.random()*list.length)];
@@ -1164,7 +1201,274 @@ function scatterGroundLeaves(n)
         addGroundLeaf(lf);
     }
 }
-scatterGroundLeaves(130);
+
+
+// ===== 景色 =====
+
+const gravelTex=ground.material.map;
+
+function placeTwin(group,make,x,z,ry)
+{
+    for(const sx of [-1,1]){
+        const o=make();
+        o.position.set(sx*x,0,z);
+        o.rotation.y=ry||0;
+        group.add(o);
+    }
+}
+
+function addGroundPlane(group,tex,w,d,x,z,rep)
+{
+    const t=tex.clone();
+    t.needsUpdate=true;
+    t.wrapS=t.wrapT=THREE.RepeatWrapping;
+    t.repeat.set(rep[0],rep[1]);
+    const m=new THREE.Mesh(new THREE.PlaneGeometry(w,d),new THREE.MeshStandardMaterial({map:t, roughness:0.95}));
+    m.rotation.x=-Math.PI/2;
+    m.position.set(x,0.002,z);
+    m.receiveShadow=true;
+    group.add(m);
+    return m;
+}
+
+function buildMori(g)
+{
+    makeTrees(g,[0,1,2,3],80,0,0);
+}
+
+function buildKoen(g)
+{
+    //まんなかに石畳
+    addGroundPlane(g,SC.makePavingTexture(),3.2,60,0,-20,[2,36]);
+    //イチョウ並木
+    for(let z=-6;z>-46;z-=4.5){
+        addTree(g,[1,1,4],-3.6+randRange(-0.3,0.3),z,randRange(7,9));
+        addTree(g,[1,1,4],3.6+randRange(-0.3,0.3),z+2,randRange(7,9));
+    }
+    makeTrees(g,[1,3,4],40,9,-60);
+    for(let z=-5;z>-30;z-=9){
+        const b=SC.makeBench();
+        b.position.set(-2.4,0,z);
+        b.rotation.y=Math.PI/2;
+        g.add(b);
+        const l=SC.makeLamp();
+        l.position.set(2.3,0,z-3);
+        g.add(l);
+    }
+}
+
+function buildJinja(g)
+{
+    const torii=SC.makeTorii();
+    torii.position.set(0,0,-6.5);
+    g.add(torii);
+    placeTwin(g,SC.makeToro,2.4,-4.2);
+    placeTwin(g,SC.makeToro,2.4,-10);
+    const hd=SC.makeHaiden();
+    hd.position.set(0,0,-17);
+    g.add(hd);
+    makeTrees(g,[0,2,0,1],70,7,-24);
+}
+
+function buildTera(g)
+{
+    //枯山水
+    addGroundPlane(g,SC.makeRakedGravelTexture(),10,6,0,-5.2,[3,2]);
+    //const r=... z-2.8 近すぎ でかくて黒い
+    const spots=[[-2.6,-6.2],[-1.6,-6.6],[2.2,-5.6],[0.6,-7.0]];
+    for(const [x,z] of spots){
+        const r=SC.makeGardenRock();
+        r.scale.setScalar(randRange(0.45,0.7));
+        r.position.set(x+randRange(-0.3,0.3),0,z);
+        r.rotation.y=randRange(0,Math.PI*2);
+        g.add(r);
+    }
+    placeTwin(g,SC.makeToro,5.2,-3);
+    const hall=SC.makeTempleHall();
+    hall.position.set(0,0,-23);
+    g.add(hall);
+    const pg=SC.makePagoda();
+    pg.position.set(11,0,-32);
+    g.add(pg);
+    makeTrees(g,[0,2,0,3],60,9,-24);
+}
+
+const SCENES=[
+    {name:"紅葉の森", time:"ひる",
+        sky:["#5f8fca","#e9c9a0","#7a5c40"], fog:[7,28],
+        sun:[-0.35,0.42,-1,"#ffd9a8",3.2], hemi:["#bcd4f0","#6a4c30",1.1], exposure:1.05,
+        ground:()=>gravelTex, leafMix:0.6, build:buildMori},
+    {name:"イチョウ並木の公園", time:"昼下がり",
+        sky:["#4f86d0","#dfe4e4","#6a6a50"], fog:[9,34],
+        sun:[0.45,0.62,-1,"#fff0d8",3.0], hemi:["#cfe0f5","#5a6a3a",1.15], exposure:1.0,
+        ground:()=>SC.makeLawnTexture(), leafMix:0.12, build:buildKoen},
+    {name:"神社の境内", time:"夕方",
+        sky:["#4a6aa0","#f2b478","#5a4030"], fog:[8,32],
+        sun:[-0.3,0.2,-1,"#ffb070",3.0], hemi:["#9fb4d8","#6a5040",1.15], exposure:1.1,
+        ground:()=>gravelTex, leafMix:0.85, build:buildJinja},
+    {name:"お寺の庭", time:"夕暮れ",
+        sky:["#28325e","#d8907a","#3a3040"], fog:[12,48],
+        sun:[0.4,0.08,-1,"#ff9a6a",2.2], hemi:["#7a88b8","#4a4a40",1.1], exposure:1.25,
+        ground:()=>SC.makeMossTexture(), leafMix:0.75, build:buildTera},
+];
+
+let sceneIdx=0;
+let sceneGroup=null;
+let unlocked=0;
+const groundTexCache={};
+
+function disposeGroup(g)
+{
+    g.traverse((o)=>{
+        if(o.geometry){ o.geometry.dispose(); }
+        if(o.material){
+            const ms=Array.isArray(o.material) ? o.material : [o.material];
+            for(const m of ms){ m.dispose(); }
+        }
+    });
+}
+
+function clearLeaves()
+{
+    for(const lf of leaves){ removeLeaf(lf); }
+    leaves.length=0;
+    for(const lf of groundLeaves){ removeLeaf(lf); }
+    groundLeaves.length=0;
+}
+
+function applyScene(i)
+{
+    const sd=SCENES[i];
+    sceneIdx=i;
+    sky.material.uniforms.top.value.set(sd.sky[0]);
+    HORIZON.set(sd.sky[1]);
+    sky.material.uniforms.low.value.set(sd.sky[2]);
+    scene.fog.near=sd.fog[0];
+    scene.fog.far=sd.fog[1];
+    sunDir.set(sd.sun[0],sd.sun[1],sd.sun[2]).normalize();
+    sunColor.set(sd.sun[3]);
+    sunPower=sd.sun[4];
+    sun.color.copy(sunColor);
+    sun.intensity=sunPower;
+    sun.position.copy(sunDir).multiplyScalar(10);
+    leafUniforms.sunCol.value.copy(sunColor).multiplyScalar(sunPower);
+    hemi.color.set(sd.hemi[0]);
+    hemi.groundColor.set(sd.hemi[1]);
+    hemi.intensity=sd.hemi[2];
+    renderer.toneMappingExposure=sd.exposure;
+
+    if(!groundTexCache[i]){
+        const t=sd.ground();
+        t.wrapS=t.wrapT=THREE.RepeatWrapping;
+        t.repeat.set(14,14);
+        t.anisotropy=8;
+        groundTexCache[i]=t;
+    }
+    ground.material.map=groundTexCache[i];
+    ground.material.needsUpdate=true;
+
+    if(sceneGroup){
+        scene.remove(sceneGroup);
+        disposeGroup(sceneGroup);
+    }
+    sceneGroup=new THREE.Group();
+    try{
+        sd.build(sceneGroup);
+    }catch(e){
+        console.error("景色つくれない",e);//!!
+    }
+    //灯りは夕方から
+    sceneGroup.traverse((o)=>{
+        if(o.name==="light"&&o.material&&o.material.emissive){
+            o.material.emissiveIntensity= i>=2 ? 2.2 : 0.15;
+        }
+    });
+    scene.add(sceneGroup);
+
+    clearLeaves();
+    scatterGroundLeaves(130);
+    try{ localStorage.setItem("ochiba_scene",String(i)); }catch(e){}
+    updateSceneSelect();
+    updateProg();
+}//finished
+
+// ===== 次の景色へ =====
+
+let stageCount=0;
+let changing=false;
+const progText=document.getElementById("progText");
+const progFill=document.querySelector("#progBar i");
+const fadeEl=document.getElementById("fade");
+const titleEl=document.getElementById("stageTitle");
+const sceneSel=document.getElementById("sceneSel");
+
+function getNeed()
+{
+    if(settings.mode==="suka"){
+        return 30;
+    }else{
+        return 12;
+    }
+}
+
+function updateProg()
+{
+    if(sceneIdx>=SCENES.length-1){
+        progText.textContent="ぜんぶの景色を見た！";
+        progFill.style.width="100%";
+        return;
+    }
+    const need=getNeed();
+    progText.textContent=`次の景色まで あと ${need-stageCount}`;
+    progFill.style.width=(stageCount/need*100)+"%";
+}
+
+function updateSceneSelect()
+{
+    sceneSel.innerHTML="";
+    for(let i=0;i<=unlocked;i++){
+        const op=document.createElement("option");
+        op.value=String(i);
+        op.textContent=`${i+1}. ${SCENES[i].name}`;
+        sceneSel.appendChild(op);
+    }
+    sceneSel.value=String(sceneIdx);
+}
+
+function showTitle(i,isNew)
+{
+    const sd=SCENES[i];
+    titleEl.innerHTML="";
+    const sm=document.createElement("small");
+    sm.textContent=(isNew ? "新しい景色 " : "")+`${i+1} / ${SCENES.length}`;
+    const em=document.createElement("em");
+    em.textContent=sd.time;
+    titleEl.append(sm,sd.name,em);
+    titleEl.classList.add("show");
+    setTimeout(()=>titleEl.classList.remove("show"),2600);
+}
+
+function changeScene(i)
+{
+    if(changing){ return; }
+    changing=true;
+    const isNew= i>unlocked;
+    if(isNew){ playUnlock(); }
+    fadeEl.classList.add("on");
+    setTimeout(()=>{
+        if(i>unlocked){
+            unlocked=i;
+            try{ localStorage.setItem("ochiba_unlocked",String(unlocked)); }catch(e){}
+        }
+        applyScene(i);
+        stageCount=0;
+        combo=0;
+        updateProg();
+        fadeEl.classList.remove("on");
+        showTitle(i,isNew);
+        changing=false;
+    },950);
+}
 
 
 // ===== 音 =====
@@ -1350,6 +1654,18 @@ function playMiss(kind)
 }
 
 
+function playUnlock()
+{
+    if(canPlay()==false){ return; }
+    const t=actx.currentTime+0.01;
+    const notes=[0,4,7,12,16,19,24];
+    for(let i=0;i<notes.length;i++){
+        playTone(t+i*0.09,noteFreq(notes[i]-5),1.6,0.13,1);
+    }
+    playNoise(t+0.3,1.4,"highpass",5000,9000,0.4,0.06);
+}
+
+
 // ===== エフェクト =====
 
 const fxCanvas=document.getElementById("fx");
@@ -1531,6 +1847,13 @@ function scoreCatch(lf,cx,cy)
         burstFx(cx,cy,10,false);
         showPop(cx,cy, combo>=2 ? `キャッチ！ ${combo}れんぞく` : "キャッチ！","hit");
     }
+    if(changing==false&&sceneIdx<SCENES.length-1){
+        stageCount++;
+        updateProg();
+        if(stageCount>=getNeed()){
+            changeScene(sceneIdx+1);
+        }
+    }
 }
 
 function findNearLeaf(cx,cy)
@@ -1659,7 +1982,9 @@ function setMode(m)
     hud.lastChild.textContent= m==="suka" ? "だいたいでつかめる！" : "形ぴったりじゃないとすり抜ける";
     score=0;
     combo=0;
+    stageCount=0;
     hud.firstChild.textContent="とった 0";
+    updateProg();
     try{ localStorage.setItem("ochiba_mode",m); }catch(e){}
 }
 modeIra.addEventListener("click",()=>{ initAudio(); setMode("ira"); });
@@ -1808,8 +2133,24 @@ function tick()
 }
 requestAnimationFrame(tick);
 
+sceneSel.addEventListener("change",()=>{
+    initAudio();
+    changeScene(parseInt(sceneSel.value,10));
+});
+
+//はじめの景色
+try{
+    unlocked=Math.min(SCENES.length-1,Math.max(0,parseInt(localStorage.getItem("ochiba_unlocked")||"0",10)||0));
+    sceneIdx=Math.min(unlocked,Math.max(0,parseInt(localStorage.getItem("ochiba_scene")||"0",10)||0));
+}catch(e){
+    unlocked=0;
+    sceneIdx=0;
+}
+applyScene(sceneIdx);
+updateProg();
+
 //デバッグ用
-window.__game={variants, setThing, setMode, PHYS, makeLeaf, pickVariant, leaves, settings, stepLeaf, spawnLeaf, startGust, handleTap, camera};
+window.__game={changeScene, applyScene, SCENES, variants, setThing, setMode, PHYS, makeLeaf, pickVariant, leaves, settings, stepLeaf, spawnLeaf, startGust, handleTap, camera};
 </script>
 </body>
 </html>
